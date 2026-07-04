@@ -1,0 +1,19 @@
+{
+  "id": "attachment",
+  "name": "Attachment",
+  "version": "0.1.0",
+  "description": "Paste the clip as a file attachment (text, image, or HTML)",
+  "author": "georgemandis",
+  "type": "native",
+  "entry": {
+    "macos-arm64": "lib/libschrodinger_plugin_attachment.dylib",
+    "linux-x86_64": "lib/libschrodinger_plugin_attachment.so",
+    "windows-x86_64": "lib/schrodinger_plugin_attachment.dll"
+  },
+  "platforms": [
+    "macos",
+    "linux",
+    "windows"
+  ],
+  "config": {}
+}
