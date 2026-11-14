@@ -19,6 +19,8 @@ use schrodinger_plugin_sdk::prelude::*;
 use schrodinger_plugin_sdk::schrodinger_plugin;
 use std::path::{Path, PathBuf};
 
+mod archive;
+
 #[derive(Default)]
 pub struct AttachmentPlugin;
 
@@ -107,10 +109,59 @@ fn sweep_old_files(dir: &Path) {
         let Ok(modified) = meta.modified() else { continue };
         if let Ok(age) = now.duration_since(modified) {
             if age.as_secs() > 3600 {
-                let _ = std::fs::remove_file(entry.path());
+                // Archives live in a per-clip subdirectory.
+                if meta.is_dir() {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                } else {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
     }
+}
+
+/// The files and folders a clip refers to, when it is a copy of files.
+/// macOS lists all of them in `NSFilenamesPboardType`; `public.file-url`
+/// holds only the first, so it is the fallback.
+fn copied_paths(entry: &ClipEntry) -> Vec<PathBuf> {
+    let read = |names: &[&str]| -> Option<Vec<u8>> {
+        names
+            .iter()
+            .find(|n| entry.meta.formats.iter().any(|f| f.eq_ignore_ascii_case(n)))
+            .and_then(|n| entry.read_format(n).ok())
+    };
+    if let Some(bytes) = read(archive::FILE_LIST) {
+        let paths = archive::paths_from_filenames_plist(&bytes);
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    if let Some(bytes) = read(archive::URI_LIST) {
+        let paths = archive::paths_from_uri_list(&bytes);
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    if let Some(bytes) = read(archive::HDROP) {
+        let paths = archive::paths_from_hdrop(&bytes);
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    read(archive::FILE_URL)
+        .and_then(|bytes| archive::path_from_file_url(&String::from_utf8_lossy(&bytes)))
+        .into_iter()
+        .collect()
+}
+
+/// Write the clip's content to a file the way "As file" does.
+fn write_content_file(entry: &ClipEntry, dir: &Path) -> Result<PathBuf, PluginError> {
+    let kind = detect_kind(&entry.meta.formats)
+        .ok_or_else(|| PluginError::from("clip has no attachable content"))?;
+    let bytes = read_bytes(entry, &kind)?;
+    let path = dir.join(format!("{}.{}", suggest_stem(entry, &kind), kind.ext()));
+    std::fs::write(&path, &bytes).map_err(|e| PluginError(format!("write attachment: {e}")))?;
+    Ok(path)
 }
 
 /// A filesystem-safe base name derived from the clip, so the attachment isn't
@@ -199,29 +250,57 @@ fn encode_hdrop(path: &Path) -> Vec<u8> {
 
 impl NativePlugin for AttachmentPlugin {
     fn applies_to(&self, entry: &ClipEntry) -> bool {
-        detect_kind(&entry.meta.formats).is_some()
+        detect_kind(&entry.meta.formats).is_some() || archive::has_file_refs(&entry.meta.formats)
     }
 
     fn apply(
         &self,
         entry: &ClipEntry,
-        _mode: Option<&str>,
+        mode: Option<&str>,
     ) -> Result<Vec<Output>, PluginError> {
-        let kind = detect_kind(&entry.meta.formats)
-            .ok_or_else(|| PluginError::from("clip has no attachable content"))?;
-        let bytes = read_bytes(entry, &kind)?;
-
         let dir = attachments_dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| PluginError(format!("create attachments dir: {e}")))?;
         sweep_old_files(&dir);
-
-        let file_name = format!("{}.{}", suggest_stem(entry, &kind), kind.ext());
-        let path = dir.join(&file_name);
-        std::fs::write(&path, &bytes)
-            .map_err(|e| PluginError(format!("write attachment: {e}")))?;
-
         let platform = entry_platform(entry);
+        let files = copied_paths(entry);
+
+        if mode == Some("zip") {
+            // Each archive gets its own directory so it can carry a clean
+            // name ("Archive.zip") without colliding with an earlier one.
+            let own = dir.join(format!("zip-{}", entry.meta.change_count));
+            let _ = std::fs::remove_dir_all(&own);
+            std::fs::create_dir_all(&own)
+                .map_err(|e| PluginError(format!("create archive dir: {e}")))?;
+            let sources = if files.is_empty() { vec![write_content_file(entry, &own)?] } else { files };
+            let dest = own.join(archive::archive_name(&sources));
+            archive::write_zip(&sources, &dest).map_err(PluginError)?;
+            if sources.len() == 1 && sources[0].starts_with(&own) {
+                let _ = std::fs::remove_file(&sources[0]); // the loose copy is now inside the archive
+            }
+            let (format, ref_bytes) = encode_file_reference(&platform, &dest)?;
+            return Ok(vec![Output::new(&format).data(ref_bytes)]);
+        }
+
+        // "As file". Copied files already are files: hand them through as
+        // they came.
+        if !files.is_empty() {
+            let mut outputs = Vec::new();
+            for set in [archive::FILE_LIST, archive::FILE_URL, archive::URI_LIST, archive::HDROP] {
+                for name in set {
+                    if entry.meta.formats.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+                        if let Ok(bytes) = entry.read_format(name) {
+                            outputs.push(Output::new(name).data(bytes));
+                        }
+                    }
+                }
+            }
+            if !outputs.is_empty() {
+                return Ok(outputs);
+            }
+        }
+
+        let path = write_content_file(entry, &dir)?;
         let (format, ref_bytes) = encode_file_reference(&platform, &path)?;
         Ok(vec![Output::new(&format).data(ref_bytes)])
     }

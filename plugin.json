@@ -1,8 +1,8 @@
 {
   "id": "attachment",
   "name": "Attachment",
-  "version": "0.1.0",
-  "description": "Paste the clip as a file attachment (text, image, or HTML)",
+  "version": "0.2.0",
+  "description": "Paste the clip as a file attachment, or bundle it (or the files you copied) into one ZIP",
   "author": "georgemandis",
   "type": "native",
   "entry": {
@@ -15,5 +15,16 @@
     "linux",
     "windows"
   ],
-  "config": {}
+  "config": {},
+  "modes": [
+    {
+      "id": "file",
+      "label": "As file",
+      "default": true
+    },
+    {
+      "id": "zip",
+      "label": "As ZIP"
+    }
+  ]
 }

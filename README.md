@@ -5,6 +5,14 @@ clipboard entry into a **file attachment**. When this derivation is active,
 pasting into an app that accepts files (Mail, Slack, Finder/Explorer, chat apps)
 drops the clip in as a file instead of inline text or an image.
 
+## Modes
+
+- **As file**: the clip as a single file attachment (described below). Files you copied are passed through unchanged.
+- **As ZIP**: one archive.
+  - Copied files and folders, one or many, are archived as they are on disk. A single item becomes `name.zip`; several become `Archive.zip`.
+  - A text, HTML or image clip is archived as the file "As file" would have produced.
+  - Folders keep their structure. `.DS_Store` and similar are left out, and symbolic links are skipped rather than followed.
+
 ## What it does
 
 `apply()` detects the clip's content, writes it to a temp file, and puts the
